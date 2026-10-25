@@ -1,0 +1,6 @@
+{
+  "_comment": "只让 /api/* 触发 Functions。静态首页走 public/，这样 404 探测不会打到函数上、也不吃额度。",
+  "version": 1,
+  "include": ["/api/*"],
+  "exclude": []
+}

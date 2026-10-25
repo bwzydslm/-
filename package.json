@@ -1,0 +1,14 @@
+{
+  "name": "netease-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "个人站点自用的网易云接口中转（Cloudflare Pages Functions）",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev public --compatibility-date=2024-11-01",
+    "deploy": "wrangler pages deploy public --project-name=netease-relay"
+  },
+  "devDependencies": {
+    "wrangler": "^3.99.0"
+  }
+}

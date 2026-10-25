@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+#  安全与缓存响应头
+#  语法同主站 public/_headers：一行路径，下面缩进写头。
+# ---------------------------------------------------------------------------
+
+/*.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+# ---------------------------------------------------------------------------
+#  接口响应自己带 Cache-Control（见 functions/api/*.js），这里不要覆写，
+#  否则会破坏直链那套「按 expi 折算」的缓存策略。
+#  只补几个安全头。
+# ---------------------------------------------------------------------------
+/api/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  # 刻意不加 Content-Security-Policy：首页是静态页，没有外部资源，
+  # 而接口返回的 JSON 不需要 CSP。加了反而容易在调试时被自己拦住。
