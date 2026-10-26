@@ -35,7 +35,11 @@ export async function onRequestGet(context) {
   return cached(context, TTL, async () => {
     try {
       const out = await searchSongs(q, limit, offset)
-      return { body: out, status: 200 }
+      /* ★ 空结果不缓存。上游偶尔会「正常返回 200 但 songs 为空」——
+         风控限速、索引抖动都会这样。这是临时状态，钉十分钟的代价是
+         用户搜同一个词十分钟内全是空，看起来像「这个站搜不到歌」。 */
+      const empty = !out.items || out.items.length === 0
+      return { body: out, status: 200, cache: !empty }
     } catch (e) {
       /* 上游挂掉时不要把错误缓存住，否则 10 分钟内都是同一个错误 */
       return {

@@ -11,6 +11,9 @@
 #    要加限流就在面板上给项目绑一个 KV，变量名必须是 RL（见 README「加固」）。
 # ============================================================================
 
-name = "netease-relay"
+# ★ name 必须是 Cloudflare 上的 Pages 项目名 `wyydl`（线上域名 wyydl.pages.dev）。
+#   写成别的名字，`npm run deploy` 会在账号下**新建一个项目**而不是更新已有的那个，
+#   表现为「部署成功但线上还是旧代码」—— 极难排查。
+name = "wyydl"
 compatibility_date = "2024-11-01"
 pages_build_output_dir = "public"

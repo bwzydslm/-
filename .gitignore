@@ -1,0 +1,10 @@
+# 依赖
+node_modules/
+
+# wrangler 的本地状态（dev 会话、缓存、临时上传目录）
+.wrangler/
+.dev.vars
+dist/
+
+# 日志
+*.log

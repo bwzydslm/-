@@ -24,37 +24,54 @@
 
 ## 部署
 
-```bash
-cd ne-relay
-npm install                 # 只装 wrangler
-npx wrangler login          # 浏览器里授权一次
+和主站一样：**GitHub 仓库 + Cloudflare Pages 自动构建**。
 
-npx wrangler pages deploy public --project-name netease-relay
-```
+线上地址：<https://wyydl.pages.dev>
 
-第一次会问要不要创建项目，选是。部署完的地址形如
-`https://netease-relay.pages.dev`，把它填进主站（见下）。
+面板里的关键设置（建项目时最容易错的就是这几格）：
+
+| 字段 | 值 | 说明 |
+| --- | --- | --- |
+| Framework preset | **None** | 没有前端构建步骤，选任何预设都会填错 |
+| Build command | **留空** | `package.json` 里没有 `build` 脚本，填 `npm run build` 会直接报 `Missing script: build` |
+| Build output directory | `public` | 填 `dist` 或 `.` 都会让 `functions/` 变成静态资源，`/api/*` 全 404 |
+| Root directory | 留空 | 仓库根就是项目根 |
+
+⚠ **别建成 Worker。** Cloudflare 的 Workers Builds 默认把 `npx wrangler deploy` 当部署命令，
+而这个仓库是 Pages 配置，会被 wrangler 顶回来：
+`It looks like you've run a Workers-specific command in a Pages project`。
+看到这句就是项目类型选错了，删掉重建，建的时候选 **Pages** 标签页。
 
 **本地跑**（不需要 Cloudflare 账号，wrangler 会本地模拟 Functions）：
 
 ```bash
 cd ne-relay
+npm install
 npx wrangler pages dev public --compatibility-date=2024-11-01
 # → http://127.0.0.1:8788
 ```
+
+用命令行直接部署也行（`npx wrangler login` 之后）：
+
+```bash
+npx wrangler pages deploy public --project-name=wyydl
+```
+
+但既然已经接了 GitHub 自动构建，平时改完 push 就够了。
 
 ## 主站怎么接
 
 主站 `src/lib/online.js` 里的地址按这个顺序取：
 
 1. `VITE_RELAY_BASE` 环境变量（构建时注入）
-2. 页面同源 `/ne`（本地开发走 vite 代理到 `server/netease-proxy.mjs`）
+2. 生产构建的兜底：`https://wyydl.pages.dev`
+3. 本地开发：同源 `/ne`（vite 代理到 `server/netease-proxy.mjs`）
 
-所以线上要把中转地址告诉构建过程：
+线上要把中转地址告诉构建过程：
 
 ```bash
 # 主站目录下
-VITE_RELAY_BASE=https://netease-relay.pages.dev npm run build
+VITE_RELAY_BASE=https://wyydl.pages.dev npm run build
 ```
 
 Cloudflare Pages 上则是在 **Settings → Environment variables** 加一条
@@ -63,7 +80,7 @@ Cloudflare Pages 上则是在 **Settings → Environment variables** 加一条
 另外主站 `public/_headers` 的 CSP 要放行这个来源：
 
 ```
-connect-src 'self' https://netease-relay.pages.dev;
+connect-src 'self' https://wyydl.pages.dev;
 img-src     'self' data: blob: https://*.music.126.net;
 media-src   'self' blob: https://*.music.126.net;
 ```
@@ -96,3 +113,32 @@ media-src   'self' blob: https://*.music.126.net;
 - 上游靠游客 cookie（`os=pc`）拿到 320k，**不需要登录**。代价是 VIP / 付费版权曲拿不到地址，
   接口会返回 `code: -110` 和一句人话提示，而不是静默失败。
 - 仅供个人自用。别把它当成公开 API 分发，也别拿它做版权内容的再分发。
+
+## 为什么请求里要带 `X-Real-IP`
+
+取直链的接口做了**地域判断**：从境外 IP 发起时，`/api/song/enhance/player/url/v1`
+一律返回 `data[0].url = null`。表现就是「搜索有结果、点播放拿不到地址」。
+
+Cloudflare 没有中国大陆节点，Pages Functions 实际跑在 HK / JP / SG / US，
+出口 IP 全在境外 —— 这是线上 `/api/url` 全部失败的唯一原因，代码本身没有 bug。
+本机（国内宽带）直连同一个接口完全正常，所以这个问题只在部署后出现。
+
+`functions/_lib/netease.js` 里因此统一带一个国内 IP 的 `X-Real-IP` 头：
+
+```js
+const CN_IP = '114.114.114.114'
+// ...
+headers: { 'User-Agent': UA, Referer: REFERER, Cookie: GUEST_COOKIE, 'X-Real-IP': CN_IP }
+```
+
+实测对照（同一台机器、同一首歌 `347230`）：
+
+| 请求头 | 上游 `dcode` | 有 url |
+| --- | --- | --- |
+| 无 | 200 | ✅ |
+| `X-Real-IP: 114.114.114.114` | 200 | ✅ |
+| `X-Real-IP: 8.8.8.8` | 404 | ❌ |
+
+搜索 / 歌词接口不受地域限制，带上同一份头也无害，所以统一在 `ne()` 里加。
+注意这只是声明「请求来自中国大陆」，不代表任何真实用户身份：全程游客态，
+拿到的仍是非 VIP 的那一份，付费曲照旧 `-110`。

@@ -18,6 +18,24 @@ const UA =
 const REFERER = 'https://music.163.com/'
 const GUEST_COOKIE = 'os=pc; appver=8.9.70; channel=netease; __csrf='
 
+/* ---- 为什么要伪造国内出口 IP ----------------------------------------------
+ * 取播放直链的接口 /api/song/enhance/player/url/v1 会做地域判断：
+ * 从境外 IP 发起时一律返回 data[0].url = null（dcode 404/-110），
+ * 于是「搜索能出结果、点播放却拿不到地址」。
+ *
+ * Cloudflare 没有中国大陆节点，Pages Functions 实际跑在 HK / JP / SG / US，
+ * 边缘出口 IP 全在境外 —— 这就是线上 /api/url 全部失败的真正原因。
+ * 本机（国内家庭宽带）直连同一接口完全正常，所以之前一直以为代码有问题。
+ *
+ * 实测：请求里带一个国内 IP 的 X-Real-IP，dcode 立刻回到 200 且带 url；
+ * 换成 8.8.8.8 则继续拿不到 —— 说明上游确实按这个头判地域。
+ * 搜索 / 歌词接口不受影响（带不带都正常），但统一带上也无害。
+ *
+ * 这里只是声明「请求来自中国大陆」，不代表任何真实用户身份：
+ * 下面所有接口都是游客（无 MUSIC_U 登录态），拿到的仍是非 VIP 的那一份。
+ * --------------------------------------------------------------------------*/
+const CN_IP = '114.114.114.114'
+
 /* Worker 里 AbortSignal.timeout 有，但老 compat date 可能没有，兜一层 */
 function signal(ms) {
   try {
@@ -39,6 +57,7 @@ export async function ne(path, { timeout = 12000 } = {}) {
       Referer: REFERER,
       Cookie: GUEST_COOKIE,
       Accept: 'application/json, text/plain, */*',
+      'X-Real-IP': CN_IP,
     },
     signal: signal(timeout),
   })
@@ -78,13 +97,41 @@ export function toTrack(s) {
 
 /* ------------------------------------------------------------------ 三件事 */
 
-export async function searchSongs(q, limit, offset) {
-  const r = await ne(
-    `/api/cloudsearch/pc?s=${encodeURIComponent(q)}&type=1&limit=${limit}&offset=${offset}`
-  )
-  const songs = (r.json && r.json.result && r.json.result.songs) || []
-  const total = (r.json && r.json.result && r.json.result.songCount) || songs.length
-  return { ok: true, items: songs.map(toTrack), total }
+/* limit / offset 必须有默认值：少传一个就会拼出 offset=undefined，
+   上游对这种参数不报错，只默默返回空列表 —— 排查起来非常费劲。 */
+export async function searchSongs(q, limit = 24, offset = 0) {
+  const enc = encodeURIComponent(q)
+  const path = `/api/cloudsearch/pc?s=${enc}&type=1&limit=${limit}&offset=${offset}`
+
+  /* ★ 上游会「200 但 songs 为空」。这不是搜不到，是风控/索引抖动：
+     同一个词前一次空、后一次有，间隔几百毫秒就恢复。所以空的要重试，
+     不能把第一次的空当成结论 —— 否则用户看到的就是「搜周杰伦晴天没有歌」。 */
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await sleep(180)
+    const r = await ne(path)
+    const songs = (r.json && r.json.result && r.json.result.songs) || []
+    if (songs.length) {
+      const total = (r.json.result && r.json.result.songCount) || songs.length
+      return { ok: true, items: songs.map(toTrack), total }
+    }
+  }
+
+  /* 两次都空，换老接口再问一次。两个都空才算真的没有。 */
+  try {
+    const r2 = await ne(
+      `/api/search/get/web?s=${enc}&type=1&limit=${limit}&offset=${offset}`
+    )
+    const s2 = (r2.json && r2.json.result && r2.json.result.songs) || []
+    const total2 = (r2.json && r2.json.result && r2.json.result.songCount) || s2.length
+    return { ok: true, items: s2.map(toTrack), total: total2 }
+  } catch {
+    /* 备用接口也挂了就按空结果返回，调用方会处理 */
+    return { ok: true, items: [], total: 0 }
+  }
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
 }
 
 export async function lyricOf(id) {

@@ -25,6 +25,31 @@ export async function onRequest(context) {
 
   const res = await next()
 
+  /* ★ /api/* 下没有匹配到函数的路径，Pages 会回落成「发首页 HTML」，
+     于是 /api/nope 返回 200 + 一坨 HTML —— 前端 fetch 会当成功去 .json()，
+     报的是「Unexpected token '<'」，指不到真正的原因。这里改写成 JSON 404。 */
+  const path = new URL(request.url).pathname
+  const ctype = res.headers.get('content-type') || ''
+  if ((path === '/api' || path.startsWith('/api/')) && ctype.includes('text/html')) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: 'not_found',
+        message: '没有这个接口',
+        path,
+        endpoints: ['/api/ping', '/api/search', '/api/lyric', '/api/url', '/api/stream'],
+      }),
+      {
+        status: 404,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store',
+          ...cors(),
+        },
+      }
+    )
+  }
+
   /* 兜底补 CORS 头：万一某个端点忘了加，这里补上，
      免得前端只看到一句「CORS 错误」而不知道是哪个接口的问题。 */
   const headers = new Headers(res.headers)

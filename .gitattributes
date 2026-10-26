@@ -1,0 +1,10 @@
+# 统一换行符：Cloudflare 的构建机是 Linux，仓库里一律存 LF。
+# 不加这一行，Windows 上提交会用 CRLF，个别文件（尤其 .toml）在边缘偶尔解析出怪问题。
+* text=auto eol=lf
+
+# 二进制，禁止任何转换
+*.woff2 binary
+*.woff binary
+*.png binary
+*.jpg binary
+*.ico binary

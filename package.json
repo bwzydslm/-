@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler pages dev public --compatibility-date=2024-11-01",
-    "deploy": "wrangler pages deploy public --project-name=netease-relay"
+    "deploy": "wrangler pages deploy public --project-name=wyydl"
   },
   "devDependencies": {
     "wrangler": "^3.99.0"
