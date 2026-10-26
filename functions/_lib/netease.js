@@ -13,23 +13,27 @@
  *    也是为什么 VIP 版权曲（fee=1）拿不到 —— 那些必须要账号。
  * ==========================================================================*/
 
+import { streamUrlViaMeting } from './meting.js'
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 const REFERER = 'https://music.163.com/'
 const GUEST_COOKIE = 'os=pc; appver=8.9.70; channel=netease; __csrf='
 
-/* ---- 为什么要伪造国内出口 IP ----------------------------------------------
+/* ---- 关于伪造国内出口 IP（已证伪，仅本地有效）------------------------------
  * 取播放直链的接口 /api/song/enhance/player/url/v1 会做地域判断：
  * 从境外 IP 发起时一律返回 data[0].url = null（dcode 404/-110），
  * 于是「搜索能出结果、点播放却拿不到地址」。
  *
- * Cloudflare 没有中国大陆节点，Pages Functions 实际跑在 HK / JP / SG / US，
- * 边缘出口 IP 全在境外 —— 这就是线上 /api/url 全部失败的真正原因。
- * 本机（国内家庭宽带）直连同一接口完全正常，所以之前一直以为代码有问题。
+ * 曾经以为带 X-Real-IP 就能解决 —— 在本机（国内宽带）确实是：
+ * 带 114.114.114.114 → 200 有 url，带 8.8.8.8 → 404 无 url。
  *
- * 实测：请求里带一个国内 IP 的 X-Real-IP，dcode 立刻回到 200 且带 url；
- * 换成 8.8.8.8 则继续拿不到 —— 说明上游确实按这个头判地域。
- * 搜索 / 歌词接口不受影响（带不带都正常），但统一带上也无害。
+ * 但在 Cloudflare 上做了 10 种头组合的对照实验（/api/diag 那次），
+ * 全部 dcode 404，加不加 X-Real-IP 毫无区别 —— 说明上游判的是
+ * **真实连接 IP**，这个头只在「本机 → 上游」这条链路上被采信。
+ *
+ * 所以线上取直链只能靠 meting.js 那层镜像兜底，这个头留着无害
+ * （本地调中转时还能少走一次兜底），别指望它救线上。
  *
  * 这里只是声明「请求来自中国大陆」，不代表任何真实用户身份：
  * 下面所有接口都是游客（无 MUSIC_U 登录态），拿到的仍是非 VIP 的那一份。
@@ -143,16 +147,27 @@ export async function lyricOf(id) {
 
 /**
  * 取播放直链。
- * 先问 v1 接口（带 level，能给高品质），不行退回老接口。
- * 拿不到时把上游 code 翻译成人话 —— code=-110 是「要登录/要付费」，
- * 这是最常见的一种，直接说清楚比让用户猜要好。
+ *
+ * 三级：
+ *   1) v1 接口（带 level，能给 br / expi 这些真元数据）
+ *   2) 老接口（v1 抽风时它偶尔还给）
+ *   3) Meting 镜像兜底 —— 见 meting.js 顶部那段：Cloudflare 边缘出口是
+ *      境外 IP，1) 2) 在线上必然拿不到 url，这一级才是线上真正生效的那条。
+ *
+ * 顺序刻意把官方放前面：本机（国内 IP）调中转时 1) 就能成，能拿到真实的
+ * br 和 expi；只有线上才一路掉到 3)。代价是线上白跑两次请求（几百毫秒），
+ * 换来的是「能用真元数据就别用猜的」。
  */
 export async function streamUrlOf(id, level) {
   let data = null
 
+  /* 超时压到 6 秒：正常失败是上游秒回 404，只有卡住才会等满。
+     线上「官方必失败 → 走镜像」是常态，不能让它把用户点播放的手感拖死
+     （两次上游 + 两个镜像，最坏 6+6+8+8 秒）。 */
   try {
     const r = await ne(
-      `/api/song/enhance/player/url/v1?ids=[${id}]&level=${level}&encodeType=mp3`
+      `/api/song/enhance/player/url/v1?ids=[${id}]&level=${level}&encodeType=mp3`,
+      { timeout: 6000 }
     )
     data = (r.json && r.json.data && r.json.data[0]) || null
   } catch {
@@ -161,11 +176,20 @@ export async function streamUrlOf(id, level) {
 
   if (!data || !data.url) {
     try {
-      const r2 = await ne(`/api/song/enhance/player/url?ids=[${id}]&br=320000`)
+      const r2 = await ne(`/api/song/enhance/player/url?ids=[${id}]&br=320000`, {
+        timeout: 6000,
+      })
       data = (r2.json && r2.json.data && r2.json.data[0]) || data
     } catch {
-      /* 保持原样，下面统一报错 */
+      /* 保持原样，下面走镜像兜底 */
     }
+  }
+
+  /* 官方两条路都没戏 → 交给 Meting 镜像。这一步在线上是常态，
+     所以注释写在这里，免得以后有人以为「线上永远不调官方接口」是 bug。 */
+  if (!data || !data.url) {
+    const viaMirror = await streamUrlViaMeting(id)
+    if (viaMirror.ok) return viaMirror
   }
 
   if (!data || !data.url) {

@@ -114,31 +114,55 @@ media-src   'self' blob: https://*.music.126.net;
   接口会返回 `code: -110` 和一句人话提示，而不是静默失败。
 - 仅供个人自用。别把它当成公开 API 分发，也别拿它做版权内容的再分发。
 
-## 为什么请求里要带 `X-Real-IP`
+## 为什么线上取不到直链，以及怎么绕过去的
 
 取直链的接口做了**地域判断**：从境外 IP 发起时，`/api/song/enhance/player/url/v1`
-一律返回 `data[0].url = null`。表现就是「搜索有结果、点播放拿不到地址」。
+一律返回 `data[0].url = null`（`dcode: 404`）。表现就是「搜索有结果、点播放拿不到地址」。
 
-Cloudflare 没有中国大陆节点，Pages Functions 实际跑在 HK / JP / SG / US，
-出口 IP 全在境外 —— 这是线上 `/api/url` 全部失败的唯一原因，代码本身没有 bug。
-本机（国内宽带）直连同一个接口完全正常，所以这个问题只在部署后出现。
+Cloudflare 没有中国大陆节点，Pages Functions 实际跑在 LAX / HKG / NRT 这些地方，
+出口 IP 全在境外 —— 这是线上 `/api/url` 失败的根因，代码本身没有 bug。
 
-`functions/_lib/netease.js` 里因此统一带一个国内 IP 的 `X-Real-IP` 头：
+### 试过但没用的：`X-Real-IP`
 
-```js
-const CN_IP = '114.114.114.114'
-// ...
-headers: { 'User-Agent': UA, Referer: REFERER, Cookie: GUEST_COOKIE, 'X-Real-IP': CN_IP }
+`functions/_lib/netease.js` 里仍然带着一个国内 IP 的 `X-Real-IP`，但**它救不了线上**，
+留着只是因为本地调中转时能少走一次兜底：
+
+| 场景 | 请求头 | 上游 `dcode` | 有 url |
+| --- | --- | --- | --- |
+| 本机（国内宽带） | 无 | 200 | ✅ |
+| 本机 | `X-Real-IP: 114.114.114.114` | 200 | ✅ |
+| 本机 | `X-Real-IP: 8.8.8.8` | 404 | ❌ |
+| **Cloudflare 边缘（LAX）** | 无 / X-Real-IP / X-Forwarded-For / 两者都给 | **全部 404** | ❌ |
+
+最后一行是拿 `/api/diag` 在线上做的 10 组对照实验（那个端点已删）。结论：上游判的是
+**真实连接 IP**，这个头只在「本机 → 上游」这条链路上被采信。
+
+### 现在用的：Meting 镜像兜底
+
+`functions/_lib/meting.js` 借第三方 Meting 服务（APlayer 生态的老项目）来解析：
+
+```
+https://api.qijieya.cn/meting/?server=netease&type=url&id=<歌曲ID>
+  → 302 Location: https://m802.music.126.net/....mp3
+  → 拿不到时返回 200 且没有 Location（不是 4xx，要按「无 Location」判失败）
 ```
 
-实测对照（同一台机器、同一首歌 `347230`）：
+镜像在服务端用**它自己的国内 IP** 调网易云，所以能拿到地址；我们只要那行 `Location`，
+音频字节还是用户的浏览器直接从 CDN 拉。
 
-| 请求头 | 上游 `dcode` | 有 url |
-| --- | --- | --- |
-| 无 | 200 | ✅ |
-| `X-Real-IP: 114.114.114.114` | 200 | ✅ |
-| `X-Real-IP: 8.8.8.8` | 404 | ❌ |
+`streamUrlOf()` 因此是三级：官方 v1 → 官方老接口 → 镜像。前两级在线上必然失败
+（各 6 秒超时上限），第三级才是线上真正生效的那条。顺序把官方放前面，是为了本机
+调用时能拿到真实的 `br` / `expi`。
 
-搜索 / 歌词接口不受地域限制，带上同一份头也无害，所以统一在 `ne()` 里加。
-注意这只是声明「请求来自中国大陆」，不代表任何真实用户身份：全程游客态，
-拿到的仍是非 VIP 的那一份，付费曲照旧 `-110`。
+**代价**：镜像拿不到 `br` / `expi`（一律给保守值），也不保证是 320k —— 实测
+`qijieya` 给完整曲（约 13MB），`injahow` 有时只给 721KB 的试听片段，所以前者排前面。
+镜像挂了就全挂，这是这个方案唯一的单点。
+
+前端还有最后一层保险（`src/lib/online.js` 的 `METING_FALLBACKS`）：中转整个不可用时，
+`<audio src>` 直接指向镜像地址，由镜像 302 到 CDN。**改了镜像域名要同步改
+`public/_headers` 的 CSP**，否则表现为「歌能搜到、点了没声音」。
+
+搜索 / 歌词接口不受地域限制，全程走官方，不经过镜像。
+
+注意全程是游客态（无 `MUSIC_U`），不代表任何真实用户身份，拿到的仍是非 VIP 的那一份，
+付费版权曲照旧拿不到地址。
